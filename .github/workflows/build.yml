@@ -1,77 +1,45 @@
-name: Rebuild APK from decompiled sources
+name: Simple rebuild with latest Apktool
 
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:  # позволяет запускать вручную
+on: [push, workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Set up JDK 11
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '11'
-
-    - name: Install Apktool
-      run: |
-        wget https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool
-        wget https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar
-        sudo mv apktool /usr/local/bin/apktool
-        sudo mv apktool_2.9.3.jar /usr/local/bin/apktool.jar
-        sudo chmod +x /usr/local/bin/apktool
-        apktool --version
-
-    - name: Install Android SDK & Build Tools
-      uses: android-actions/setup-android@v3
-
-    - name: Build APK with Apktool
-      run: |
-        mkdir -p output
-        # Укажите здесь путь к папке с декомпилированным проектом
-        apktool b ./ -o output/unsigned.apk
-
-    - name: Create keystore for signing
-      run: |
-        keytool -genkey -v \
-          -keystore my.keystore \
-          -alias myalias \
-          -keyalg RSA \
-          -keysize 2048 \
-          -validity 10000 \
-          -storepass android \
-          -keypass android \
-          -dname "CN=GitHub Actions, OU=CI, O=GitHub, L=San Francisco, ST=CA, C=US"
-
-    - name: Zipalign APK
-      run: |
-        $ANDROID_HOME/build-tools/34.0.0/zipalign -v -p 4 output/unsigned.apk output/aligned.apk
-
-    - name: Sign APK
-      run: |
-        $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
-          --ks my.keystore \
-          --ks-key-alias myalias \
-          --ks-pass pass:android \
-          --key-pass pass:android \
-          output/aligned.apk
-
-    - name: Rename final APK
-      run: |
-        mv output/aligned.apk output/rebuild_app.apk
-
-    - name: Upload APK artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: rebuilt-apk
-        path: output/rebuild_app.apk
-        if-no-files-found: error
-        retention-days: 30
+      - uses: actions/checkout@v4
+      
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+      
+      - name: Install latest Apktool
+        run: |
+          # Скачиваем последнюю версию напрямую
+          LATEST_URL=$(curl -s https://api.github.com/repos/iBotPeaches/Apktool/releases/latest | grep "browser_download_url.*jar" | cut -d '"' -f 4)
+          wget -q https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool
+          wget -q "$LATEST_URL" -O apktool.jar
+          chmod +x apktool
+          sudo mv apktool /usr/local/bin/
+          sudo mv apktool.jar /usr/local/bin/
+          echo "✅ Installed: $(apktool --version)"
+      
+      - name: Build APK
+        run: |
+          mkdir -p dist
+          apktool b . -o dist/unsigned.apk
+          
+          # Простая подпись
+          keytool -genkey -v -keystore debug.keystore -alias debug -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Debug" -noprompt
+          
+          # Используем последние build-tools
+          BUILD_TOOLS=$(ls -1v $ANDROID_HOME/build-tools | tail -n 1)
+          $ANDROID_HOME/build-tools/$BUILD_TOOLS/zipalign -v -p 4 dist/unsigned.apk dist/aligned.apk
+          $ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner sign --ks debug.keystore --ks-key-alias debug --ks-pass pass:android --key-pass pass:android dist/aligned.apk
+      
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: rebuilt-app
+          path: dist/aligned.apk
