@@ -1,217 +1,77 @@
-name: Build Android App
+name: Rebuild APK from decompiled sources
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:  # Позволяет запускать вручную
+  workflow_dispatch:  # позволяет запускать вручную
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'  # Eclipse Temurin
-          java-version: '17'
-      
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-      
-      - name: Install Android SDK components
-        run: |
-          # Принимаем лицензии
-          yes | sdkmanager --licenses > /dev/null
-          
-          # Устанавливаем нужные компоненты
-          sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
-      
-      - name: Create directory structure
-        run: |
-          mkdir -p app/build/intermediates
-          mkdir -p app/build/outputs/apk
-          mkdir -p app/src/main/java/com/example/app
-          mkdir -p app/src/main/res/layout
-          mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/drawable
-      
-      - name: Check project files
-        run: |
-          echo "=== Project structure ==="
-          find . -type f -name "*.java" -o -name "*.kt" -o -name "*.xml" | head -20
-          echo "========================="
-      
-      - name: Create local.properties
-        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
-      
-      - name: Set up AndroidManifest.xml if missing
-        run: |
-          if [ ! -f "AndroidManifest.xml" ] && [ ! -f "app/src/main/AndroidManifest.xml" ]; then
-            echo "Creating default AndroidManifest.xml"
-            mkdir -p app/src/main
-            cat > app/src/main/AndroidManifest.xml << 'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="com.example.app">
-              
-              <application
-                  android:allowBackup="true"
-                  android:icon="@mipmap/ic_launcher"
-                  android:label="@string/app_name"
-                  android:theme="@style/AppTheme">
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="true">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-              </application>
-          </manifest>
-          EOF
-          fi
-      
-      - name: Compile with AAPT (Resource compilation)
-        run: |
-          # Находим путь к aapt
-          AAPT_PATH=$(find $ANDROID_HOME/build-tools -name "aapt" | head -1)
-          
-          if [ -f "AndroidManifest.xml" ]; then
-            MANIFEST="AndroidManifest.xml"
-          else
-            MANIFEST="app/src/main/AndroidManifest.xml"
-          fi
-          
-          # Создаем R.java файл
-          mkdir -p app/build/generated/source/r/debug
-          
-          $AAPT_PATH package -f \
-            -M $MANIFEST \
-            -I $ANDROID_HOME/platforms/android-33/android.jar \
-            -S app/src/main/res \
-            -J app/build/generated/source/r/debug \
-            -F app/build/outputs/apk/resources.apk \
-            --generate-dependencies
-          
-          echo "Resources compiled successfully"
-      
-      - name: Find and compile Java files
-        run: |
-          # Находим все Java файлы
-          JAVA_FILES=$(find app/src/main/java -name "*.java")
-          
-          if [ -z "$JAVA_FILES" ]; then
-            echo "No Java files found, looking in root..."
-            JAVA_FILES=$(find . -maxdepth 2 -name "*.java")
-          fi
-          
-          if [ -z "$JAVA_FILES" ]; then
-            echo "Warning: No Java files found"
-          else
-            echo "Compiling Java files: $JAVA_FILES"
-            
-            # Создаем папку для классов
-            mkdir -p app/build/intermediates/classes
-            
-            # Находим dx/d8 инструмент
-            D8_PATH=$(find $ANDROID_HOME/build-tools -name "d8" | head -1)
-            DX_PATH=$(find $ANDROID_HOME/build-tools -name "dx" | head -1)
-            
-            # Компилируем Java в class файлы
-            javac -d app/build/intermediates/classes \
-              -cp $ANDROID_HOME/platforms/android-33/android.jar \
-              -source 1.8 -target 1.8 \
-              app/build/generated/source/r/debug/com/example/app/R.java \
-              $JAVA_FILES
-            
-            # Конвертируем class в dex
-            mkdir -p app/build/intermediates/dex
-            
-            if [ -f "$D8_PATH" ]; then
-              # Используем d8 (новый способ)
-              $D8_PATH --lib $ANDROID_HOME/platforms/android-33/android.jar \
-                --output app/build/intermediates/dex \
-                app/build/intermediates/classes
-            elif [ -f "$DX_PATH" ]; then
-              # Используем dx (старый способ)
-              $DX_PATH --dex --output=app/build/intermediates/dex/classes.dex \
-                app/build/intermediates/classes
-            else
-              echo "Error: Neither d8 nor dx found"
-              exit 1
-            fi
-          fi
-      
-      - name: Package APK
-        run: |
-          # Создаем временную папку для сборки APK
-          mkdir -p app/build/apk
-          
-          # Копируем ресурсы и dex в apk
-          if [ -f "app/build/outputs/apk/resources.apk" ]; then
-            unzip -q app/build/outputs/apk/resources.apk -d app/build/apk/
-          fi
-          
-          if [ -f "app/build/intermediates/dex/classes.dex" ]; then
-            cp app/build/intermediates/dex/classes.dex app/build/apk/
-          elif [ -d "app/build/intermediates/dex" ]; then
-            cp -r app/build/intermediates/dex/* app/build/apk/ 2>/dev/null || true
-          fi
-          
-          # Находим aapt для упаковки
-          AAPT_PATH=$(find $ANDROID_HOME/build-tools -name "aapt" | head -1)
-          
-          # Создаем APK без подписи
-          cd app/build/apk
-          zip -r ../outputs/apk/app-unsigned.apk ./*
-          cd ../../..
-          
-          # Выравниваем APK
-          ZIPALIGN_PATH=$(find $ANDROID_HOME/build-tools -name "zipalign" | head -1)
-          $ZIPALIGN_PATH -v -p 4 \
-            app/build/outputs/apk/app-unsigned.apk \
-            app/build/outputs/apk/app-aligned.apk
-      
-      - name: Create debug keystore
-        run: |
-          # Создаем debug keystore для подписи
-          keytool -genkey -v -keystore debug.keystore \
-            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass android -keypass android \
-            -dname "CN=Debug, OU=Debug, O=Debug, L=Debug, ST=Debug, C=US"
-      
-      - name: Sign APK
-        run: |
-          APKSIGNER_PATH=$(find $ANDROID_HOME/build-tools -name "apksigner" | head -1)
-          
-          if [ -f "$APKSIGNER_PATH" ]; then
-            # Используем apksigner (новый способ)
-            $APKSIGNER_PATH sign \
-              --ks debug.keystore \
-              --ks-key-alias androiddebugkey \
-              --ks-pass pass:android \
-              --key-pass pass:android \
-              --out app/build/outputs/apk/app-signed.apk \
-              app/build/outputs/apk/app-aligned.apk
-          else
-            # Используем jarsigner (старый способ)
-            jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 \
-              -keystore debug.keystore -storepass android \
-              app/build/outputs/apk/app-aligned.apk androiddebugkey
-            cp app/build/outputs/apk/app-aligned.apk app/build/outputs/apk/app-signed.apk
-          fi
-      
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-debug
-          path: app/build/outputs/apk/app-signed.apk
-          retention-days: 7
-      
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 11
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '11'
+
+    - name: Install Apktool
+      run: |
+        wget https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool
+        wget https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar
+        sudo mv apktool /usr/local/bin/apktool
+        sudo mv apktool_2.9.3.jar /usr/local/bin/apktool.jar
+        sudo chmod +x /usr/local/bin/apktool
+        apktool --version
+
+    - name: Install Android SDK & Build Tools
+      uses: android-actions/setup-android@v3
+
+    - name: Build APK with Apktool
+      run: |
+        mkdir -p output
+        # Укажите здесь путь к папке с декомпилированным проектом
+        apktool b ./ -o output/unsigned.apk
+
+    - name: Create keystore for signing
+      run: |
+        keytool -genkey -v \
+          -keystore my.keystore \
+          -alias myalias \
+          -keyalg RSA \
+          -keysize 2048 \
+          -validity 10000 \
+          -storepass android \
+          -keypass android \
+          -dname "CN=GitHub Actions, OU=CI, O=GitHub, L=San Francisco, ST=CA, C=US"
+
+    - name: Zipalign APK
+      run: |
+        $ANDROID_HOME/build-tools/34.0.0/zipalign -v -p 4 output/unsigned.apk output/aligned.apk
+
+    - name: Sign APK
+      run: |
+        $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+          --ks my.keystore \
+          --ks-key-alias myalias \
+          --ks-pass pass:android \
+          --key-pass pass:android \
+          output/aligned.apk
+
+    - name: Rename final APK
+      run: |
+        mv output/aligned.apk output/rebuild_app.apk
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: rebuilt-apk
+        path: output/rebuild_app.apk
+        if-no-files-found: error
+        retention-days: 30
